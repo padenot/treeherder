@@ -50,6 +50,7 @@ describe('PushList', () => {
 
   beforeEach(() => {
     mockNavigate = jest.fn();
+    window.history.replaceState(null, null, `/jobs?repo=${repoName}`);
     // Mock window.history.pushState for URL updates
     jest.spyOn(window.history, 'pushState').mockImplementation(() => {});
   });
@@ -141,6 +142,7 @@ describe('PushList', () => {
 
   afterEach(() => {
     cleanup();
+    fetchMock.resetHistory();
     jest.restoreAllMocks();
     // Reset Zustand pushes store between tests
     usePushesStore.setState({ ...pushesInitialState });
@@ -171,6 +173,39 @@ describe('PushList', () => {
       </MemoryRouter>
     );
   };
+
+  const renderPrimedPushList = (search, props = {}, stateOverrides = {}) => {
+    const seededPushes = pushListFixture.results.slice(0, 2);
+    window.history.replaceState(null, null, `/jobs${search}`);
+    usePushesStore.setState({
+      ...pushesInitialState,
+      pushList: seededPushes,
+      newestPushTimestamp: seededPushes[0].push_timestamp,
+      oldestPushTimestamp: seededPushes[seededPushes.length - 1].push_timestamp,
+      ...stateOverrides,
+    });
+
+    return render(
+      <MemoryRouter initialEntries={[`/jobs${search}`]}>
+        <div id="th-global-content">
+          <PushList
+            user={{ isLoggedIn: false }}
+            repoName={repoName}
+            currentRepo={currentRepo}
+            filterModel={new FilterModel(mockNavigate, {
+              search,
+              pathname: '/jobs',
+            })}
+            duplicateJobsVisible={false}
+            groupCountsExpanded={false}
+            pushHealthVisibility="None"
+            getAllShownJobs={() => {}}
+            {...props}
+          />
+        </div>
+      </MemoryRouter>
+    );
+  };
   // push1Revision is'ba9c692786e95143b8df3f4b3e9b504dfbc589a0';
   const push1Id = 'push-511138';
   // push2Revision is 'd5b037941b0ebabcc9b843f24d926e9d65961087';
@@ -180,6 +215,63 @@ describe('PushList', () => {
     render(testPushList());
 
     expect(await pushCount()).toHaveLength(2);
+  });
+
+  test('should only show older pager in the default repo view', async () => {
+    const { queryByTestId } = render(testPushList());
+
+    await pushCount();
+    expect(queryByTestId('get-next-10')).toBeInTheDocument();
+    expect(queryByTestId('get-more-recent-10')).not.toBeInTheDocument();
+  });
+
+  test('should show newer pager when viewing a single revision', () => {
+    const revision = pushListFixture.results[0].revision;
+    const { queryByTestId } = renderPrimedPushList(
+      `?repo=${repoName}&revision=${revision}`,
+      { revision },
+    );
+
+    expect(queryByTestId('get-next-10')).toBeInTheDocument();
+    expect(queryByTestId('get-more-recent-10')).toBeInTheDocument();
+  });
+
+  test('should show newer pager when viewing a range', () => {
+    const { queryByTestId } = renderPrimedPushList(
+      `?repo=${repoName}&fromchange=${pushListFixture.results[1].revision}&tochange=${pushListFixture.results[0].revision}`,
+    );
+
+    expect(queryByTestId('get-next-10')).toBeInTheDocument();
+    expect(queryByTestId('get-more-recent-10')).toBeInTheDocument();
+  });
+
+  test('should hide pagers when there are no loaded pushes', () => {
+    const { queryByTestId } = renderPrimedPushList(
+      `?repo=${repoName}`,
+      {},
+      {
+        pushList: [],
+        newestPushTimestamp: null,
+        oldestPushTimestamp: null,
+      },
+    );
+
+    expect(queryByTestId('get-next-10')).not.toBeInTheDocument();
+    expect(queryByTestId('get-more-recent-10')).not.toBeInTheDocument();
+  });
+
+  test('should hide pagers on lando views', () => {
+    const revision = pushListFixture.results[0].revision;
+    const { queryByTestId } = renderPrimedPushList(
+      `?repo=${repoName}&revision=${revision}`,
+      {
+        revision,
+        landoCommitID: 'abc123',
+      },
+    );
+
+    expect(queryByTestId('get-next-10')).not.toBeInTheDocument();
+    expect(queryByTestId('get-more-recent-10')).not.toBeInTheDocument();
   });
 
   test('should switch to single loaded revision', async () => {
@@ -301,6 +393,181 @@ describe('PushList', () => {
     await waitFor(() => getAllByTestId('push-511132'));
     expect(fetchMock.called(`begin:${nextNUrl(50)}`)).toBe(true);
     expect(await pushCount()).toHaveLength(6);
+  });
+
+  test('should load N more recent pushes when click get-more-recent N', async () => {
+    const { getByTestId, getAllByTestId } = renderPrimedPushList(
+      `?repo=${repoName}&tochange=${pushListFixture.results[0].revision}`,
+    );
+    const recentNUrl = getProjectUrl(
+      '/push/?full=true&count=10&push_timestamp__gt=',
+      repoName,
+    );
+    const newerPush = {
+      id: 511139,
+      revision: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      author: 'test@mozilla.com',
+      revisions: [
+        {
+          result_set_id: 511139,
+          repository_id: 4,
+          revision: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          author: 'Test User <test@mozilla.com>',
+          comments: 'Test push',
+        },
+      ],
+      revision_count: 1,
+      push_timestamp: 1562868000,
+      repository_id: 4,
+    };
+
+    fetchMock.get(`begin:${recentNUrl}`, {
+      ...pushListFixture,
+      results: [newerPush],
+    });
+    fetchMock.get(
+      `begin:${getApiUrl('/jobs/?push_id=', repoName)}`,
+      jobListFixtureOne,
+      { overwriteRoutes: false },
+    );
+    fetchMock.get(
+      `begin:https://bugzilla.mozilla.org/rest/bug`,
+      { bugs: [] },
+      { overwriteRoutes: false },
+    );
+
+    expect(await pushCount()).toHaveLength(2);
+
+    fireEvent.click(getByTestId('get-more-recent-10'));
+    await waitFor(() => getByTestId('push-511139'));
+    expect(fetchMock.called(`begin:${recentNUrl}`)).toBe(true);
+    expect(await pushCount()).toHaveLength(3);
+    expect(window.history.pushState).toHaveBeenCalledWith(
+      null,
+      null,
+      expect.stringContaining(
+        'tochange=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      ),
+    );
+  });
+
+  test('should expand a single revision when click get-more-recent N', async () => {
+    const revision = pushListFixture.results[0].revision;
+    const { getByTestId } = renderPrimedPushList(
+      `?repo=${repoName}&revision=${revision}`,
+      { revision },
+    );
+    const recentRevisionUrl = getProjectUrl(
+      '/push/?full=true&count=100&push_timestamp__gt=',
+      repoName,
+    );
+    const newerPush = {
+      id: 511140,
+      revision: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      author: 'test@mozilla.com',
+      revisions: [
+        {
+          result_set_id: 511140,
+          repository_id: 4,
+          revision: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+          author: 'Test User <test@mozilla.com>',
+          comments: 'Newer test push',
+        },
+      ],
+      revision_count: 1,
+      push_timestamp: 1562869000,
+      repository_id: 4,
+    };
+
+    fetchMock.get(`begin:${recentRevisionUrl}`, {
+      ...pushListFixture,
+      results: [newerPush],
+    });
+    fetchMock.get(
+      `begin:${getApiUrl('/jobs/?push_id=', repoName)}`,
+      jobListFixtureOne,
+      { overwriteRoutes: false },
+    );
+    fetchMock.get(
+      `begin:https://bugzilla.mozilla.org/rest/bug`,
+      { bugs: [] },
+      { overwriteRoutes: false },
+    );
+
+    fireEvent.click(getByTestId('get-more-recent-10'));
+    await waitFor(() => getByTestId('push-511140'));
+    expect(fetchMock.called(`begin:${recentRevisionUrl}`)).toBe(true);
+    expect(fetchMock.calls(`begin:${recentRevisionUrl}`)[0][0]).toContain(
+      `fromchange=${revision}`,
+    );
+    expect(window.history.pushState).toHaveBeenCalledWith(
+      null,
+      null,
+      `?repo=${repoName}&fromchange=${revision}`,
+    );
+    expect(window.history.pushState).toHaveBeenCalledWith(
+      null,
+      null,
+      expect.stringContaining(
+        'tochange=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      ),
+    );
+  });
+
+  test('should drop enddate when click get-more-recent N', async () => {
+    const { getByTestId } = renderPrimedPushList(
+      `?repo=${repoName}&enddate=2024-01-10`,
+    );
+    const recentNUrl = getProjectUrl(
+      '/push/?full=true&count=10&push_timestamp__gt=',
+      repoName,
+    );
+    const newerPush = {
+      id: 511141,
+      revision: 'cccccccccccccccccccccccccccccccccccccccc',
+      author: 'test@mozilla.com',
+      revisions: [
+        {
+          result_set_id: 511141,
+          repository_id: 4,
+          revision: 'cccccccccccccccccccccccccccccccccccccccc',
+          author: 'Test User <test@mozilla.com>',
+          comments: 'Newest test push',
+        },
+      ],
+      revision_count: 1,
+      push_timestamp: 1562870000,
+      repository_id: 4,
+    };
+
+    fetchMock.get(
+      `begin:${recentNUrl}`,
+      {
+        ...pushListFixture,
+        results: [newerPush],
+      },
+      { overwriteRoutes: true },
+    );
+    fetchMock.get(
+      `begin:${getApiUrl('/jobs/?push_id=', repoName)}`,
+      jobListFixtureOne,
+      { overwriteRoutes: false },
+    );
+    fetchMock.get(
+      `begin:https://bugzilla.mozilla.org/rest/bug`,
+      { bugs: [] },
+      { overwriteRoutes: false },
+    );
+
+    fireEvent.click(getByTestId('get-more-recent-10'));
+    await waitFor(() => getByTestId('push-511141'));
+    expect(fetchMock.called(`begin:${recentNUrl}`)).toBe(true);
+    expect(fetchMock.lastCall()[0]).not.toContain('enddate=2024-01-10');
+    expect(window.history.pushState).toHaveBeenCalledWith(
+      null,
+      null,
+      `?repo=${repoName}`,
+    );
   });
 
   test('jobs should have fields required for retriggers', async () => {

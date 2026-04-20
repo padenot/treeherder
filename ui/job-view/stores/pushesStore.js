@@ -113,9 +113,12 @@ const addPushes = (data, pushList, jobMap, setFromchange, oldBugSummaryMap) => {
 
     const bugIds = getBugIds(data.results);
 
+    const newestPushTimestamp = newPushList[0].push_timestamp;
+
     const newStuff = {
       pushList: newPushList,
       oldestPushTimestamp,
+      newestPushTimestamp,
       ...doRecalculateUnclassifiedCounts(jobMap),
       ...getRevisionTips(newPushList),
     };
@@ -173,6 +176,7 @@ export const initialState = {
   jobsLoaded: false,
   loadingPushes: false,
   oldestPushTimestamp: null,
+  newestPushTimestamp: null,
   allUnclassifiedFailureCount: 0,
   filteredUnclassifiedFailureCount: 0,
 };
@@ -220,6 +224,58 @@ export const usePushesStore = create(
             bugSummaryMap,
           );
           set({ loadingPushes: false, ...pushResults });
+        } else {
+          notify('Error retrieving push data!', 'danger', { sticky: true });
+          set({ loadingPushes: false });
+        }
+      },
+
+      fetchRecentPushes: async (count = DEFAULT_PUSH_COUNT) => {
+        const { pushList, jobMap, newestPushTimestamp, bugSummaryMap } = get();
+
+        if (!newestPushTimestamp) return;
+
+        set({ loadingPushes: true });
+
+        const locationSearch = parseQueryParams(window.location.search);
+        const options = {
+          ...pick(locationSearch, PUSH_FETCH_KEYS),
+          push_timestamp__gt: newestPushTimestamp,
+          count,
+        };
+        delete options.tochange;
+        if (options.revision) {
+          options.fromchange = options.revision;
+        }
+        delete options.revision;
+        delete options.enddate;
+
+        const { data, failureStatus } = await PushModel.getList(options);
+
+        if (!failureStatus) {
+          const pushResults = addPushes(
+            data.results.length ? data : { results: [] },
+            pushList,
+            jobMap,
+            false,
+            bugSummaryMap,
+          );
+          set({ loadingPushes: false, ...pushResults });
+
+          if (pushResults.pushList) {
+            const newestRevision = pushResults.pushList[0].revision;
+            if (getUrlParam('tochange') !== newestRevision) {
+              const params = new URLSearchParams(window.location.search);
+              if (params.has('revision')) {
+                params.set('fromchange', params.get('revision'));
+                params.delete('revision');
+              }
+              params.delete('enddate');
+              params.set('tochange', newestRevision);
+              replaceLocation(params);
+              window.dispatchEvent(new CustomEvent(thEvents.filtersUpdated));
+            }
+          }
         } else {
           notify('Error retrieving push data!', 'danger', { sticky: true });
           set({ loadingPushes: false });
@@ -325,6 +381,7 @@ export const usePushesStore = create(
           ...getRevisionTips(pushList),
           ...doRecalculateUnclassifiedCounts(jobMap),
           oldestPushTimestamp: pushList[pushList.length - 1].push_timestamp,
+          newestPushTimestamp: pushList[0].push_timestamp,
         });
       },
 
@@ -374,6 +431,8 @@ export const usePushesStore = create(
 // Standalone functions for use outside React components
 export const fetchPushes = (count, setFromchange) =>
   usePushesStore.getState().fetchPushes(count, setFromchange);
+export const fetchRecentPushes = (count) =>
+  usePushesStore.getState().fetchRecentPushes(count);
 export const pollPushes = () => usePushesStore.getState().pollPushes();
 export const clearPushes = () => usePushesStore.getState().clearPushes();
 export const setPushes = (pushList, jobMap) =>

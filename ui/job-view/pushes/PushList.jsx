@@ -14,15 +14,20 @@ import {
 import {
   usePushesStore,
   fetchPushes,
+  fetchRecentPushes,
   updateRange,
   pollPushes,
 } from '../stores/pushesStore';
-import { updatePushParams } from '../../helpers/location';
+import {
+  updatePushParams,
+  updateRecentPushParams,
+} from '../../helpers/location';
 
 import Push from './Push';
 import PushLoadErrors from './PushLoadErrors';
 
 const PUSH_POLL_INTERVAL = 60000;
+const PUSH_PAGE_SIZES = [10, 20, 50];
 
 /**
  * URL-FIRST ARCHITECTURE
@@ -55,6 +60,9 @@ function PushList({
   const loadingPushes = usePushesStore((state) => state.loadingPushes);
   const jobsLoaded = usePushesStore((state) => state.jobsLoaded);
   const jobMap = usePushesStore((state) => state.jobMap);
+  const newestPushTimestamp = usePushesStore(
+    (state) => state.newestPushTimestamp,
+  );
   const allUnclassifiedFailureCount = usePushesStore(
     (state) => state.allUnclassifiedFailureCount,
   );
@@ -63,6 +71,14 @@ function PushList({
   const pushIntervalId = useRef(null);
   const prevRouterSearch = useRef(location.search);
   const prevJobsLoaded = useRef(jobsLoaded);
+  const locationParams = new URLSearchParams(location.search);
+  const showRecentPager =
+    !landoCommitID &&
+    newestPushTimestamp &&
+    (locationParams.has('revision') ||
+      locationParams.has('tochange') ||
+      locationParams.has('enddate'));
+  const showOlderPager = !landoCommitID && pushList.length > 0;
 
   const getUrlRangeValues = useCallback((search) => {
     const params = [...new URLSearchParams(search)];
@@ -128,6 +144,15 @@ function PushList({
     [fetchPushes, location],
   );
 
+  const fetchMoreRecentPushes = useCallback(
+    (count) => {
+      const params = updateRecentPushParams(location);
+      window.history.pushState(null, null, params);
+      fetchRecentPushes(count);
+    },
+    [fetchRecentPushes, location],
+  );
+
   const setWindowTitle = useCallback(() => {
     document.title = `[${allUnclassifiedFailureCount}] ${repoName}`;
   }, [allUnclassifiedFailureCount, repoName]);
@@ -183,6 +208,25 @@ function PushList({
     setWindowTitle();
   }
 
+  const renderPager = (label, testIdPrefix, onClick) => (
+    <div className="card card-body get-next">
+      <span>{label}</span>
+      <div className="btn-group">
+        {PUSH_PAGE_SIZES.map((count) => (
+          <Button
+            variant="outline-dark"
+            className="btn-light-bordered"
+            onClick={() => onClick(count)}
+            key={`${testIdPrefix}-${count}`}
+            data-testid={`${testIdPrefix}-${count}`}
+          >
+            {count}
+          </Button>
+        ))}
+      </div>
+    </div>
+  );
+
   return (
     // Bug 1619873 - role="list" works better here than an interactive role
     /* eslint-disable jsx-a11y/no-noninteractive-element-interactions */
@@ -192,6 +236,8 @@ function PushList({
       onMouseDown={(evt) => clearIfEligibleTarget(evt.target)}
     >
       {jobsLoaded && <span className="hidden ready" />}
+      {showRecentPager &&
+        renderPager('get more recent:', 'get-more-recent', fetchMoreRecentPushes)}
       {repoName &&
         pushList.map((push) => (
           <ErrorBoundary
@@ -231,22 +277,7 @@ function PushList({
           landoStatus={landoStatus}
         />
       )}
-      <div className="card card-body get-next">
-        <span>get next:</span>
-        <div className="btn-group">
-          {[10, 20, 50].map((count) => (
-            <Button
-              variant="outline-dark"
-              className="btn-light-bordered"
-              onClick={() => fetchNextPushes(count)}
-              key={count}
-              data-testid={`get-next-${count}`}
-            >
-              {count}
-            </Button>
-          ))}
-        </div>
-      </div>
+      {showOlderPager && renderPager('get next:', 'get-next', fetchNextPushes)}
     </div>
   );
 }

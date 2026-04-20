@@ -95,3 +95,20 @@ export const updatePushParams = (location) => {
   }
   return `?${params.toString()}`;
 };
+
+export const updateRecentPushParams = (location) => {
+  const params = new URLSearchParams(location.search);
+
+  if (params.has('revision')) {
+    // We are viewing a single revision, but the user has asked for newer
+    // pushes. Keep the current revision as the bottom of the range.
+    const revision = params.get('revision');
+    params.delete('revision');
+    params.set('fromchange', revision);
+  } else if (params.has('enddate')) {
+    // We are fetching newer pushes, so we don't want to limit ourselves by
+    // ``enddate``. After the fetch, ``tochange`` will represent the new top.
+    params.delete('enddate');
+  }
+  return `?${params.toString()}`;
+};
